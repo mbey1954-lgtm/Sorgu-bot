@@ -1,244 +1,102 @@
-import os
 import subprocess
-import sys
-import importlib
+import tempfile
+import os
 from telegram import Update
-from telegram.ext import CommandHandler, MessageHandler, filters
-from telegram.ext import Application
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# === AYARLAR ===
-TOKEN = "8500441874:AAGvjXGC0zqH6si8et1yBYkb_PV8mHmmnok"  # Bot tokeninizi buraya ekleyin
-DATA_FOLDER = "user_files"
-os.makedirs(DATA_FOLDER, exist_ok=True)
+TOKEN = "8500441874:AAGvjXGC0zqH6si8et1yBYkb_PV8mHmmnok"
+ALLOWED_USERS = [8444268448]  # İzin verilen kullanıcı ID'leri, boş bırakırsanız herkes kullanabilir
 
-# Kullanıcı dosyalarını kaydedeceğimiz alan
-user_data = {}
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Merhaba! Bana .py dosyası gönder, çalıştırayım.")
 
-# === EXTERNAL PACKAGE CHECK ===
-def check_and_install_package(package_name):
-    """ Package'i kontrol et ve yoksa yükle """
-    try:
-        importlib.import_module(package_name)
-    except ImportError:
-        print(f"Yüklenmemiş {package_name} paketi. Yükleniyor...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-
-# === DOSYA YÜKLEME İŞLEMLERİ ===
-async def upload(update: Update, context):
-    user_id = update.message.from_user.id
-    file = update.message.document
-
-    # Kullanıcıdan dosyayı al
-    if file.mime_type != 'application/x-python':
-        await update.message.reply_text("❌ Sadece `.py` dosyaları kabul ediyorum!")
+async def handle_py_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if ALLOWED_USERS and user_id not in ALLOWED_USERS:
+        await update.message.reply_text("⛔ Yetkiniz yok!")
         return
 
-    # Dosya adını kaydet
-    file_name = file.file_name
-    file_path = os.path.join(DATA_FOLDER, f"{user_id}_{file_name}")
-
-    # Dosyayı kaydet
-    new_file = await file.get_file()
-    await new_file.download(file_path)
-
-    # Kullanıcıya yükleme tamamlandığını bildir
-    await update.message.reply_text(f"📤 {file_name} yüklendi!\n⏳ Admin onayı bekleniyor...")
-
-    # Kullanıcı verilerini güncelle
-    user_data.setdefault(user_id, {'files': []})['files'].append(file_name)
-
-# === DOSYAYI ÇALIŞTIRMA ===
-async def run_script(update: Update, context):
-    user_id = update.message.from_user.id
-
-    # Onaylı kullanıcılardan sadece çalıştırma izni
-    if not user_data.get(user_id, {}).get('approved', False):
-        await update.message.reply_text("❌ Onaylı bir kullanıcı değilsiniz!")
+    document = update.message.document
+    if not document.file_name.endswith('.py'):
         return
 
-    # Kullanıcının yüklendiği dosyaları al
-    files = user_data.get(user_id, {}).get('files', [])
-    if not files:
-        await update.message.reply_text("❌ Yüklü dosya yok!")
-        return
-
-    # Dosyayı çalıştırmadan önce paket kontrolü ve yükleme
-    for file_name in files:
-        file_path = os.path.join(DATA_FOLDER, f"{user_id}_{file_name}")
+    await update.message.reply_text("📥 Dosya alındı, işleniyor...")
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path = os.path.join(tmpdir, document.file_name)
         
-        # Dosyayı analiz et ve gereken paketleri yükle
-        try:
-            # Dosyadaki bağımlılıkları kontrol et (import komutlarını al)
-            with open(file_path, 'r') as f:
-                content = f.read()
+        file = await context.bot.get_file(document.file_id)
+        await file.download_to_drive(file_path)
+        
+        await install_requirements(file_path, update)
+        await run_python_file(file_path, update)
 
-            # Bağımlılıkları analiz et ve eksikleri yükle
-            packages = []
-            for line in content.splitlines():
-                if line.startswith("import "):
-                    package = line.split()[1]
-                    packages.append(package)
+async def install_requirements(file_path, update):
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        imports = []
+        lines = content.split('\n')
+        
+        for line in lines:
+            line = line.strip()
+            if line.startswith('import ') or line.startswith('from '):
+                parts = line.split()
+                if len(parts) > 1:
+                    module = parts[1].split('.')[0]
+                    if module not in imports and module != '__future__':
+                        imports.append(module)
+        
+        if imports:
+            await update.message.reply_text(f"🔧 Paketler kuruluyor: {', '.join(imports)}")
+            for package in imports:
+                try:
+                    subprocess.check_call(['pip', 'install', package], 
+                                         stdout=subprocess.DEVNULL, 
+                                         stderr=subprocess.DEVNULL)
+                except:
+                    continue
+        
+    except Exception as e:
+        print(f"Requirements error: {e}")
+
+async def run_python_file(file_path, update):
+    try:
+        await update.message.reply_text("🚀 Kod çalıştırılıyor...")
+        
+        result = subprocess.run(['python', file_path], 
+                              capture_output=True, 
+                              text=True, 
+                              timeout=30)
+        
+        output = result.stdout + result.stderr
+        
+        if len(output) > 4000:
+            await update.message.reply_text("📤 Çıktı çok uzun, ilk 4000 karakter:")
+            await update.message.reply_text(output[:4000])
+        elif output:
+            await update.message.reply_text(f"Çıktı:\n```\n{output}\n```", parse_mode='Markdown')
+        else:
+            await update.message.reply_text("✅ Kod çalıştı, çıktı yok.")
             
-            # Bağımlılıkları yükle
-            for package in packages:
-                check_and_install_package(package)
+    except subprocess.TimeoutExpired:
+        await update.message.reply_text("⏰ Zaman aşımı! Kod 30 saniyeden uzun sürdü.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Hata: {str(e)}")
 
-            # Dosyayı çalıştır
-            result = subprocess.run(['python', file_path], capture_output=True, text=True)
-            # Çıktıları kullanıcıya gönder
-            if result.returncode == 0:
-                await update.message.reply_text(f"✅ {file_name} başarıyla çalıştırıldı!")
-            else:
-                await update.message.reply_text(f"❌ {file_name} çalıştırılırken hata oluştu:\n{result.stderr}")
-        except Exception as e:
-            await update.message.reply_text(f"❌ Dosya çalıştırılamadı: {str(e)}")
-
-# === Komutları Bağlama ===
 def main():
-    # Bot tokeni burada tanımlandı
-    application = Application.builder().token(TOKEN).build()
-
-    # Yükleme ve çalıştırma komutlarını ekleyelim
-    upload_handler = MessageHandler(filters.Document.MIME_TYPE("application/x-python"), upload)
-    application.add_handler(upload_handler)
-
-    run_handler = CommandHandler("run", run_script)
-    application.add_handler(run_handler)
-
-    application.run_polling()
+    app = Application.builder().token(TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_py_file))
+    
+    print("🤖 Bot çalışıyor...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    main()boardButton("❌ Reddet/Banla", callback_data=f"perm_reject_{user_id}")]
-            ])
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"🆕 Yeni kullanıcı dil seçti!\n\n👤 @{username}\n🆔 ID: {user_id}",
-                reply_markup=keyboard
-            )
-        else:
-            await query.edit_message_text(
-                t(user_id, 'welcome', name=query.from_user.first_name) + "\n\n" + t(user_id, 'rules'),
-                parse_mode='Markdown',
-                reply_markup=get_main_menu(user_id)
-            )
-
-    elif query.data == "change_lang":
-        await query.edit_message_text("🌍 Yeni dilinizi seçin:", reply_markup=get_language_keyboard())
-
-# === ANA MENÜ BUTONLARI ===
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    if is_banned(user_id):
-        await query.edit_message_text(t(user_id, 'banned_msg'))
-        return
-
-    if user_id != ADMIN_ID and not user_data.get(user_id, {}).get('approved', False):
-        await query.edit_message_text(t(user_id, 'permission_req', username=query.from_user.username or "user"))
-        return
-
-    data = query.data
-
-    if data == "upload":
-        total = len(user_data[user_id].get('files', [])) + len(user_data[user_id].get('pending', []))
-        if total >= MAX_FILES:
-            await query.edit_message_text(t(user_id, 'max_files'), reply_markup=get_main_menu(user_id))
-            return
-        await query.edit_message_text(t(user_id, 'upload_prompt'), reply_markup=get_main_menu(user_id))
-
-    elif data == "myfiles":
-        files = user_data[user_id].get('files', [])
-        pending = user_data[user_id].get('pending', [])
-        keyboard = []
-        for f in pending:
-            keyboard.append([InlineKeyboardButton(f"{t(user_id, 'pending')}: {f}", callback_data="none")])
-        for f in files:
-            pid_path = os.path.join(RUNNING_FOLDER, f"{user_id}_{f}.pid")
-            status = t(user_id, 'running') if os.path.exists(pid_path) else t(user_id, 'approved')
-            keyboard.append([InlineKeyboardButton(f"{status} {f}", callback_data="none")])
-            keyboard.append([InlineKeyboardButton(f"🗑 Sil: {f}", callback_data=f"delete_{f}")])
-        keyboard.append([InlineKeyboardButton(t(user_id, 'back_btn'), callback_data="back")])
-        await query.edit_message_text(
-            f"📂 Dosyaların ({len(files) + len(pending)}/5)",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    elif data == "help":
-        await query.edit_message_text(
-            t(user_id, 'help_text'),
-            parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t(user_id, 'back_btn'), callback_data="back")]])
-        )
-
-    elif data == "back":
-        await query.edit_message_text(
-            t(user_id, 'welcome', name=query.from_user.first_name).split('\n\n')[0],
-            reply_markup=get_main_menu(user_id)
-        )
-
-    elif data.startswith("delete_"):
-        filename = data.split("_", 1)[1]
-        for folder in [DATA_FOLDER, PENDING_FOLDER, RUNNING_FOLDER]:
-            path = os.path.join(folder, f"{user_id}_{filename}")
-            pid_path = path + ".pid"
-            if os.path.exists(path):
-                os.remove(path)
-            if os.path.exists(pid_path):
-                try:
-                    with open(pid_path) as f:
-                        os.kill(int(f.read().strip()), 9)
-                except:
-                    pass
-                os.remove(pid_path)
-        user_data[user_id]['files'] = [f for f in user_data[user_id].get('files', []) if f != filename]
-        user_data[user_id]['pending'] = [f for f in user_data[user_id].get('pending', []) if f != filename]
-        await query.edit_message_text(f"🗑 {filename} silindi!", reply_markup=get_main_menu(user_id))
-
-# === ADMİN PANEL ===
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Bu komut sadece admin içindir!")
-        return
-    await update.message.reply_text(ADMIN_TEXTS['panel_title'], parse_mode='Markdown', reply_markup=get_admin_panel_menu())
-
-# === ADMİN BUTONLARI ===
-async def admin_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if query.from_user.id != ADMIN_ID:
-        await query.answer("❌ Sadece admin!")
-        return
-    await query.answer()
-
-    data = query.data
-
-    if data == "admin_stats":
-        total_users = len(user_data)
-        approved = sum(1 for d in user_data.values() if d.get('approved') and not d.get('banned') and int(d.get('user_id', 0)) != ADMIN_ID)
-        banned = sum(1 for d in user_data.values() if d.get('banned'))
-        pending_files = sum(len(d.get('pending', [])) for d in user_data.values())
-        running_count = len([f for f in os.listdir(RUNNING_FOLDER) if f.endswith(".pid")])
-        total_files = sum(len(d.get('files', [])) + len(d.get('pending', [])) for d in user_data.values())
-
-        text = (
-            "📊 *Bot İstatistikleri*\n\n"
-            f"👥 Toplam kullanıcı: {total_users}\n"
-            f"✅ Onaylı kullanıcı: {approved}\n"
-            f"🚫 Banlı kullanıcı: {banned}\n"
-            f"⏳ Bekleyen dosya: {pending_files}\n"
-            f"▶️ Çalışan script: {running_count}\n"
-            f"📁 Toplam dosya: {total_files}"
-        )
-        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=get_admin_panel_menu())
-
-    elif data == "admin_logs":
-        if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
-            await query.edit_message_text(ADMIN_TEXTS['no_logs'], reply_markup=get_admin_panel_menu())
-            return
-        with open(LOG_FILE, "rb") as f:
-            await context.bot.send_document(ADMIN_ID, f, caption=ADMIN_TEXTS['logs_caption'])
-        await query.edit_message_text("📊 Loglar gönderildi!", reply_markup=get_admin_panel_menu())
+    main()_menu())
 
     elif data == "admin_running":
         running_files = []
