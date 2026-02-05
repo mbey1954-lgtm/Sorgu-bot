@@ -1,208 +1,114 @@
 import os
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import subprocess
+import sys
+import importlib
+from telegram import Update
+from telegram.ext import CommandHandler, MessageHandler, filters
+from telegram.ext import Application
 
 # === AYARLAR ===
-BOT_TOKEN = "8500441874:AAGvjXGC0zqH6si8et1yBYkb_PV8mHmmnok"  # BOT TOKENINIZ
-ADMIN_ID =8444268448
-ADMIN_USERNAME = "zordodestek"
-MAX_FILES = 5
+TOKEN = "8500441874:AAGvjXGC0zqH6si8et1yBYkb_PV8mHmmnok"  # Bot tokeninizi buraya ekleyin
 DATA_FOLDER = "user_files"
-PENDING_FOLDER = "pending_files"
-RUNNING_FOLDER = "running_scripts"
-LOG_FILE = "usage_logs.txt"
-
 os.makedirs(DATA_FOLDER, exist_ok=True)
-os.makedirs(PENDING_FOLDER, exist_ok=True)
-os.makedirs(RUNNING_FOLDER, exist_ok=True)
 
-# Kullanıcı verileri
-user_data = {}  # {user_id: {'lang': 'tr', 'approved': False, 'files': [], 'pending': [], 'banned': False, 'username': ''}}
+# Kullanıcı dosyalarını kaydedeceğimiz alan
+user_data = {}
 
-# === ÇOK DİLLİ METİNLER ===
-LANGUAGES = {
-    'tr': {
-        'choose_lang': "🌍 Lütfen dilinizi seçin:",
-        'welcome': "🚀 *Merhaba {name}!*\n\nBen *ZORDO-SANAL-VDS* 🤖\nÜcretsiz sanal VDS! Python scriptini yükle, admin onaylasın → otomatik çalışsın 🔥",
-        'rules': "📌 Sadece `.py` dosyası\n⏳ Admin onayı zorunlu\n📊 Maksimum 5 dosya",
-        'upload_btn': "📤 Dosya Yükle",
-        'myfiles_btn': "📂 Dosyalarım",
-        'help_btn': "ℹ️ Yardım",
-        'admin_btn': "👤 Admin",
-        'change_lang_btn': "🌍 Dil Değiştir",
-        'back_btn': "🔙 Ana Menü",
-        'upload_prompt': "📤 Gönder bakalım `.py` dosyanı! Admin onayı sonrası çalışacak 🚀",
-        'file_uploaded': "📤 {file} yüklendi!\n⏳ Admin onayı bekleniyor...",
-        'file_approved': "✅ {file} onaylandı ve çalıştırılıyor! 🚀",
-        'file_rejected': "❌ {file} dosyası reddedildi.",
-        'max_files': "⚠️ Maksimum 5 dosya hakkın var! Önce birini sil.",
-        'only_py': "❌ Sadece `.py` dosyası kabul ediyorum!",
-        'permission_req': "Merhaba @{username}!\n\n🚀 Botu kullanabilmek için admin onayı gerekiyor.\n\nTalebin @{admin}'a gönderildi. Beklemede kal! ⏳",
-        'permission_approved': "✅ Tebrikler! Artık ZORDO-SANAL-VDS'i tam olarak kullanabilirsin! 🚀",
-        'permission_rejected': "❌ Üzgünüm, talebin reddedildi.",
-        'banned_msg': "🚫 Bu botu kullanman yasaklandı. Admin ile iletişime geç.",
-        'help_text': "ℹ️ ZORDİ-SANAL-VDS*\n\n📤 .py dosyası yükle → admin onaylasın → otomatik çalışsın\n📊 Maksimum 5 dosya\n🗑 Dosyalarını sil\n👤 Admin: @{admin}",
-        'pending': "⏳ Onay Bekliyor",
-        'running': "✅ Çalışıyor",
-        'approved': "✅ Onaylı",
-    },
-    'en': {
-        'choose_lang': "🌍 Please select your language:",
-        'welcome': "🚀 *Hello {name}!*\n\nI am *ZORDO-SANAL-VDS* 🤖\nFree virtual VDS! Upload Python script → admin approves → runs automatically 🔥",
-        'rules': "📌 Only `.py` files\n⏳ Admin approval required\n📊 Maximum 5 files",
-        'upload_btn': "📤 Upload File",
-        'myfiles_btn': "📂 My Files",
-        'help_btn': "ℹ️ Help",
-        'admin_btn': "👤 Admin",
-        'change_lang_btn': "🌍 Change Language",
-        'back_btn': "🔙 Main Menu",
-        'upload_prompt': "📤 Send your `.py` file! It will run after admin approval 🚀",
-        'file_uploaded': "📤 {file} uploaded!\n⏳ Waiting for admin approval...",
-        'file_approved': "✅ {file} approved and running! 🚀",
-        'file_rejected': "❌ {file} has been rejected.",
-        'max_files': "⚠️ You have reached the maximum of 5 files! Delete one first.",
-        'only_py': "❌ Only `.py` files are accepted!",
-        'permission_req': "Hello @{username}!\n\n🚀 Admin approval required to use the bot.\nYour request sent to @{admin}. Please wait! ⏳",
-        'permission_approved': "✅ Congratulations! You can now fully use ZORDO-SANAL-VDS! 🚀",
-        'permission_rejected': "❌ Sorry, your request was rejected.",
-        'banned_msg': "🚫 You are banned from using this bot. Contact admin.",
-        'help_text': "ℹ️ *ZORDO-SANAL-VDS*\n\n📤 Upload .py file → admin approves → runs automatically\n📊 Max 5 files\n🗑 Delete your files\n👤 Admin: @{admin}",
-        'pending': "⏳ Pending Approval",
-        'running': "✅ Running",
-        'approved': "✅ Approved",
-    },
-    # 'ar' ve 'ru' dillerini istersen ekleyebilirsin
-}
+# === EXTERNAL PACKAGE CHECK ===
+def check_and_install_package(package_name):
+    """ Package'i kontrol et ve yoksa yükle """
+    try:
+        importlib.import_module(package_name)
+    except ImportError:
+        print(f"Yüklenmemiş {package_name} paketi. Yükleniyor...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
 
-# === ADMİN METİNLERİ ===
-ADMIN_TEXTS = {
-    'panel_title': "🔧 *ZORDO-SANAL-VDS Admin Paneli*\n\nNe yapmak istiyorsun?",
-    'stats_btn': "📊 İstatistikler",
-    'logs_btn': "📋 Logları Gönder (txt)",
-    'running_btn': "▶️ Çalışan Scriptler",
-    'users_btn': "👥 Onaylı Kullanıcılar",
-    'stop_all_btn': "⏹ Tüm Scriptleri Durdur",
-    'msg_user_btn': "✉️ Kullanıcıya Mesaj",
-    'announce_btn': "📢 Toplu Duyuru",
-    'back_admin': "🔙 Ana Menüye Dön",
-    'no_logs': "📄 Henüz log yok.",
-    'logs_caption': "📊 ZORDO-SANAL-VDS Kullanım Logları",
-    'running_title': "✅ *Çalışan Scriptler*",
-    'no_running': "Hiç çalışan script yok.",
-    'users_title': "👥 *Onaylı Kullanıcılar*",
-    'no_users': "Onaylı kullanıcı yok.",
-    'announce_prompt': "📢 Duyuru mesajını yaz (tüm onaylı kullanıcılara gönderilecek):",
-    'announce_sent': "📢 Duyurunuz tüm onaylı kullanıcılara gönderildi!",
-    'msg_prompt': "✉️ Mesaj göndermek istediğin kullanıcı ID'sini yaz:",
-    'msg_text_prompt': "✉️ Göndermek istediğin mesajı yaz (ID: {uid}):",
-    'msg_sent': "✅ Mesaj gönderildi!",
-    'ban_prompt': "🚫 Banlamak istediğin kullanıcı ID'sini yaz:",
-    'unban_prompt': "✅ Ban kaldırmak istediğin kullanıcı ID'sini yaz:",
-    'banned': "🚫 Kullanıcı banlandı!",
-    'unbanned': "✅ Kullanıcının banı kaldırıldı!",
-    'all_stopped': "🛑 {count} adet çalışan script durduruldu.",
-    'nothing_to_stop': "⚠️ Zaten çalışan script yok.",
-}
+# === DOSYA YÜKLEME İŞLEMLERİ ===
+async def upload(update: Update, context):
+    user_id = update.message.from_user.id
+    file = update.message.document
 
-def get_lang(user_id):
-    return user_data.get(user_id, {}).get('lang', 'tr')
-
-def t(user_id, key, **kwargs):
-    lang = get_lang(user_id)
-    text = LANGUAGES.get(lang, LANGUAGES['tr']).get(key, LANGUAGES['tr'][key])
-    return text.format(**kwargs, admin=ADMIN_USERNAME)
-
-# === KLAVYELER ===
-def get_language_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🇹🇷 Türkçe", callback_data="lang_tr")],
-        [InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")],
-        # İstersen Arapça ve Rusça ekle
-    ])
-
-def get_main_menu(user_id):
-    lang = get_lang(user_id)
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(LANGUAGES[lang]['upload_btn'], callback_data="upload")],
-        [InlineKeyboardButton(LANGUAGES[lang]['myfiles_btn'], callback_data="myfiles")],
-        [InlineKeyboardButton(LANGUAGES[lang]['help_btn'], callback_data="help")],
-        [InlineKeyboardButton(LANGUAGES[lang]['admin_btn'] + f" @{ADMIN_USERNAME}", url=f"https://t.me/{ADMIN_USERNAME}")],
-        [InlineKeyboardButton(LANGUAGES[lang]['change_lang_btn'], callback_data="change_lang")]
-    ])
-
-def get_admin_panel_menu():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(ADMIN_TEXTS['stats_btn'], callback_data="admin_stats")],
-        [InlineKeyboardButton(ADMIN_TEXTS['running_btn'], callback_data="admin_running")],
-        [InlineKeyboardButton(ADMIN_TEXTS['stop_all_btn'], callback_data="admin_stop_all")],
-        [InlineKeyboardButton(ADMIN_TEXTS['users_btn'], callback_data="admin_users")],
-        [InlineKeyboardButton(ADMIN_TEXTS['msg_user_btn'], callback_data="admin_msg_user")],
-        [InlineKeyboardButton(ADMIN_TEXTS['announce_btn'], callback_data="admin_announce")],
-        [InlineKeyboardButton(ADMIN_TEXTS['logs_btn'], callback_data="admin_logs")],
-        [InlineKeyboardButton("🚫 Ban At", callback_data="admin_ban"),
-         InlineKeyboardButton("✅ Ban Kaldır", callback_data="admin_unban")],
-        [InlineKeyboardButton(ADMIN_TEXTS['back_admin'], callback_data="back")]
-    ])
-
-# === BAN KONTROL ===
-def is_banned(user_id):
-    return user_data.get(user_id, {}).get('banned', False)
-
-# === /start ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    username = user.username or user.first_name
-
-    if is_banned(user_id):
-        await update.message.reply_text(t(user_id, 'banned_msg'))
+    # Kullanıcıdan dosyayı al
+    if file.mime_type != 'application/x-python':
+        await update.message.reply_text("❌ Sadece `.py` dosyaları kabul ediyorum!")
         return
 
-    if user_id not in user_data:
-        await update.message.reply_text(t(user_id, 'choose_lang'), reply_markup=get_language_keyboard())
+    # Dosya adını kaydet
+    file_name = file.file_name
+    file_path = os.path.join(DATA_FOLDER, f"{user_id}_{file_name}")
+
+    # Dosyayı kaydet
+    new_file = await file.get_file()
+    await new_file.download(file_path)
+
+    # Kullanıcıya yükleme tamamlandığını bildir
+    await update.message.reply_text(f"📤 {file_name} yüklendi!\n⏳ Admin onayı bekleniyor...")
+
+    # Kullanıcı verilerini güncelle
+    user_data.setdefault(user_id, {'files': []})['files'].append(file_name)
+
+# === DOSYAYI ÇALIŞTIRMA ===
+async def run_script(update: Update, context):
+    user_id = update.message.from_user.id
+
+    # Onaylı kullanıcılardan sadece çalıştırma izni
+    if not user_data.get(user_id, {}).get('approved', False):
+        await update.message.reply_text("❌ Onaylı bir kullanıcı değilsiniz!")
         return
 
-    if user_id != ADMIN_ID and not user_data[user_id].get('approved', False):
-        await update.message.reply_text(t(user_id, 'permission_req', username=username))
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ Onayla", callback_data=f"perm_approve_{user_id}"),
-             InlineKeyboardButton("❌ Reddet/Banla", callback_data=f"perm_reject_{user_id}")]
-        ])
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🆕 Yeni kullanıcı izin istiyor!\n\n👤 @{username}\n🆔 ID: {user_id}",
-            reply_markup=keyboard
-        )
+    # Kullanıcının yüklendiği dosyaları al
+    files = user_data.get(user_id, {}).get('files', [])
+    if not files:
+        await update.message.reply_text("❌ Yüklü dosya yok!")
         return
 
-    await update.message.reply_text(
-        t(user_id, 'welcome', name=user.first_name) + "\n\n" + t(user_id, 'rules'),
-        parse_mode='Markdown',
-        reply_markup=get_main_menu(user_id)
-    )
+    # Dosyayı çalıştırmadan önce paket kontrolü ve yükleme
+    for file_name in files:
+        file_path = os.path.join(DATA_FOLDER, f"{user_id}_{file_name}")
+        
+        # Dosyayı analiz et ve gereken paketleri yükle
+        try:
+            # Dosyadaki bağımlılıkları kontrol et (import komutlarını al)
+            with open(file_path, 'r') as f:
+                content = f.read()
 
-# === DİL SEÇİMİ ===
-async def language_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    username = query.from_user.username or query.from_user.first_name
+            # Bağımlılıkları analiz et ve eksikleri yükle
+            packages = []
+            for line in content.splitlines():
+                if line.startswith("import "):
+                    package = line.split()[1]
+                    packages.append(package)
+            
+            # Bağımlılıkları yükle
+            for package in packages:
+                check_and_install_package(package)
 
-    if query.data.startswith("lang_"):
-        lang_code = query.data.split("_")[1]
-        user_data.setdefault(user_id, {})['lang'] = lang_code
-        user_data[user_id].setdefault('files', [])
-        user_data[user_id].setdefault('pending', [])
-        user_data[user_id]['approved'] = (user_id == ADMIN_ID)
-        user_data[user_id]['banned'] = False
-        user_data[user_id]['username'] = username
+            # Dosyayı çalıştır
+            result = subprocess.run(['python', file_path], capture_output=True, text=True)
+            # Çıktıları kullanıcıya gönder
+            if result.returncode == 0:
+                await update.message.reply_text(f"✅ {file_name} başarıyla çalıştırıldı!")
+            else:
+                await update.message.reply_text(f"❌ {file_name} çalıştırılırken hata oluştu:\n{result.stderr}")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Dosya çalıştırılamadı: {str(e)}")
 
-        if user_id != ADMIN_ID and not user_data[user_id]['approved']:
-            await query.edit_message_text(t(user_id, 'permission_req', username=username))
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Onayla", callback_data=f"perm_approve_{user_id}"),
-                 InlineKeyboardButton("❌ Reddet/Banla", callback_data=f"perm_reject_{user_id}")]
+# === Komutları Bağlama ===
+def main():
+    # Bot tokeni burada tanımlandı
+    application = Application.builder().token(TOKEN).build()
+
+    # Yükleme ve çalıştırma komutlarını ekleyelim
+    upload_handler = MessageHandler(filters.Document.MIME_TYPE("application/x-python"), upload)
+    application.add_handler(upload_handler)
+
+    run_handler = CommandHandler("run", run_script)
+    application.add_handler(run_handler)
+
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()boardButton("❌ Reddet/Banla", callback_data=f"perm_reject_{user_id}")]
             ])
             await context.bot.send_message(
                 ADMIN_ID,
